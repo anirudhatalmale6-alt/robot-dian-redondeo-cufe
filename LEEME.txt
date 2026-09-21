@@ -70,14 +70,29 @@ archivo, cuantos descuadres tenia, CUFE anterior y CUFE nuevo.
 
 
 -----------------------------------------------------------
- IMPORTANTE - EL ORDEN IMPORTA
+ DONDE ENCAJA EN TU PROCESO
 -----------------------------------------------------------
-El robot tiene que trabajar ANTES de la firma:
+Tu proceso queda asi:
 
-      tu software genera el XML  ->  ROBOT  ->  firma  ->  envio a DIAN
+   1. Tu software genera el XML
+   2. EL ROBOT lo corrige y le pone el CUFE nuevo
+   3. Tu .bat de siempre: firma, arma el .zip y lo envia a la DIAN
 
-Si el XML ya viene firmado y le cambiamos un centavo, la firma deja de
-validar. El robot lo detecta y te lo avisa en el informe, pero ese archivo
-hay que volver a firmarlo antes de mandarlo.
+El robot va en el paso 2, entre los dos. No cambia nada de lo que ya tienes:
+no firma, no arma zip y no envia. Solo deja el XML bien.
 
-El robot NO firma y NO envia nada a la DIAN. Solo corrige el XML.
+El orden NO se puede cambiar. Si se corrige un XML que ya esta firmado, la
+firma deja de validar, porque la firma corresponde a los valores viejos. Por
+eso el robot tiene que trabajar sobre el XML SIN firmar, antes de tu .bat.
+Si le pasas uno ya firmado el robot igual lo corrige, pero te lo avisa en el
+informe con letras grandes para que no lo mandes asi.
+
+Si tu .bat espera un nombre de archivo exacto: en modo vigilar deja
+nombre_salida = igual en config.ini (asi viene). El XML corregido sale en la
+carpeta salida con el mismo nombre que tenia el original, entonces tu .bat lo
+encuentra sin cambiarle una sola linea. Si prefieres distinguirlos, pon
+nombre_salida = sufijo y saldra como NOMBRE_corregido.xml.
+
+Ojo: en config.ini la carpeta salida NO puede ser la misma que entrada. Si las
+pones iguales el robot se encontraria su propio archivo corregido una y otra
+vez, por eso en ese caso no arranca y te lo dice.

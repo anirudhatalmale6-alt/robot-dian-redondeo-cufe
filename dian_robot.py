@@ -64,6 +64,8 @@ def leer_config():
         "procesados": ruta("procesados", "procesados"),
         "errores": ruta("errores", "errores"),
         "intervalo": int(carpetas.get("intervalo_segundos", "5") or 5),
+        "mismo_nombre": (carpetas.get("nombre_salida", "igual").strip().lower()
+                         != "sufijo"),
     }
 
 
@@ -86,13 +88,25 @@ def anotar(fila):
 
 
 def corregir(xml_path, config, carpeta_salida=None):
-    """Corrige un XML. Devuelve (ok, mensaje_corto)."""
+    """Corrige un XML. Devuelve (ok, mensaje_corto).
+
+    Si carpeta_salida es None (modo arrastrar) el corregido queda al lado del
+    original con el sufijo _corregido, porque no se puede sobreescribir el
+    original que el usuario acaba de arrastrar.
+
+    En modo vigilar la salida va a otra carpeta, asi que ahi si se puede
+    conservar el nombre EXACTO del original. Eso importa: el .bat de firma y
+    envio del cliente puede esperar un nombre concreto.
+    """
     nombre = os.path.basename(xml_path)
     raiz, _ = os.path.splitext(nombre)
     destino_dir = carpeta_salida or os.path.dirname(os.path.abspath(xml_path))
     os.makedirs(destino_dir, exist_ok=True)
 
-    salida_xml = os.path.join(destino_dir, f"{raiz}_corregido.xml")
+    if carpeta_salida and config["mismo_nombre"]:
+        salida_xml = os.path.join(destino_dir, nombre)
+    else:
+        salida_xml = os.path.join(destino_dir, f"{raiz}_corregido.xml")
     salida_txt = os.path.join(destino_dir, f"{raiz}_informe.txt")
     sello = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -169,6 +183,14 @@ def estable(ruta, intentos=3, espera=0.4):
 def modo_vigilar(config):
     for carpeta in ("entrada", "salida", "procesados", "errores"):
         os.makedirs(config[carpeta], exist_ok=True)
+
+    # Si salida apunta a la misma carpeta que entrada, el robot se encontraria
+    # su propio archivo una y otra vez. Mejor pararlo aqui que dejarlo girando.
+    if os.path.realpath(config["salida"]) == os.path.realpath(config["entrada"]):
+        raise SystemExit(
+            "config.ini: 'salida' no puede ser la misma carpeta que 'entrada'.\n"
+            "El robot se leeria su propio archivo corregido sin parar.\n"
+            "Dejale a salida una carpeta distinta.")
 
     print("Robot DIAN vigilando.")
     print(f"  Deja los XML en : {config['entrada']}")
