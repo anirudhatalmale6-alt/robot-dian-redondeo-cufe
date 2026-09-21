@@ -607,6 +607,23 @@ function Invoke-Xml([string] $ruta, [string] $claveTecnica, [string] $ambiente) 
         $esquemaCufe = $uuidNodo.GetAttribute('schemeName')
     }
 
+    # El ambiente lo dice el propio XML en ProfileExecutionID, y es lo que va a
+    # ver la DIAN. Se prefiere ese dato antes que el de config.ini: si el config
+    # dice 2 y la factura es de produccion, el CUFE sale mal y el rechazo no
+    # dice "ambiente", dice "CUFE incorrecto".
+    $ambXml = TextoDe $raiz 'cbc:ProfileExecutionID' $ns
+    if ($null -ne $ambXml) { $ambXml = $ambXml.Trim() }
+    $ambCfg = $ambiente
+    if (-not [string]::IsNullOrWhiteSpace($ambXml)) { $ambiente = $ambXml }
+    if (-not [string]::IsNullOrWhiteSpace($ambXml) -and
+        -not [string]::IsNullOrWhiteSpace($ambCfg) -and $ambXml -ne $ambCfg) {
+        $nombres = @{ '1' = 'produccion'; '2' = 'habilitacion' }
+        [void] $avisos.Add(
+            "config.ini dice ambiente = $ambCfg ($($nombres[$ambCfg])) pero el XML viene marcado como`r`n" +
+            "    $ambXml ($($nombres[$ambXml])) en ProfileExecutionID. Use el del XML, que es`r`n" +
+            "    el que valida la DIAN. Corrige el config.ini para que no se repita.")
+    }
+
     $cadena = $null; $cufeNuevo = $null
     if ($claveTecnica -and $ambiente) {
         $r = Get-Cufe $raiz $ns $claveTecnica $ambiente

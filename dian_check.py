@@ -604,6 +604,24 @@ def procesar(xml_path, clave_tecnica=None, ambiente=None):
     check_tax_totals(root, "totales", issues, fix=True)
     totals = check_monetary_total(root, sum_lines, issues, orig, avisos, fix=True)
 
+    # El ambiente lo dice el propio XML en ProfileExecutionID, y es lo que va
+    # a ver la DIAN. Se prefiere ese dato antes que el de config.ini: si el
+    # config dice 2 y la factura es de produccion, el CUFE sale mal y el
+    # rechazo no dice "ambiente", dice "CUFE incorrecto".
+    amb_xml = text_of(root, "cbc:ProfileExecutionID")
+    amb_xml = amb_xml.strip() if amb_xml else None
+    amb_cfg = str(ambiente).strip() if ambiente else None
+    ambiente = amb_xml or amb_cfg
+    if amb_xml and amb_cfg and amb_xml != amb_cfg:
+        nombres = {"1": "produccion", "2": "habilitacion"}
+        avisos.append(
+            f"config.ini dice ambiente = {amb_cfg} "
+            f"({nombres.get(amb_cfg, '?')}) pero el XML viene marcado como\n"
+            f"    {amb_xml} ({nombres.get(amb_xml, '?')}) en ProfileExecutionID. "
+            "Use el del XML, que es\n"
+            "    el que valida la DIAN. Corrige el config.ini para que no se "
+            "repita.")
+
     cufe_xml, scheme = current_cufe(root)
     cadena = digest = None
     if clave_tecnica and ambiente:

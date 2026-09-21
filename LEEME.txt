@@ -49,6 +49,12 @@ Abre  config.ini  con el Bloc de notas y pon:
 
 Guarda y cierra. Eso es todo.
 
+El ambiente en realidad lo lee del propio XML, del campo ProfileExecutionID,
+porque ese es el que valida la DIAN. El de config.ini es solo respaldo para
+cuando el XML no lo traiga. Si los dos no coinciden te avisa en el informe.
+Esto importa porque el ambiente entra dentro del CUFE: si se calcula con el
+ambiente equivocado la DIAN no te dice "ambiente", te dice "CUFE incorrecto".
+
 Sin la clave tecnica el robot igual corrige los valores, pero NO puede
 calcular el CUFE, porque la clave entra dentro del hash. Te lo avisa.
 
