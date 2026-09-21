@@ -607,6 +607,34 @@ function Invoke-Xml([string] $ruta, [string] $claveTecnica, [string] $ambiente) 
         $esquemaCufe = $uuidNodo.GetAttribute('schemeName')
     }
 
+    # Avisa si la fecha de vencimiento quedo ANTES que la de emision. No se
+    # corrige nunca: cual de las dos esta mal lo decide quien factura, y ademas
+    # la fecha de emision entra dentro del CUFE.
+    $emision = TextoDe $raiz 'cbc:IssueDate' $ns
+    if (-not [string]::IsNullOrWhiteSpace($emision)) {
+        $emision = $emision.Trim()
+        $candidatos = New-Object System.Collections.ArrayList
+        [void] $candidatos.Add(@('DueDate', (TextoDe $raiz 'cbc:DueDate' $ns)))
+        foreach ($pm in $raiz.SelectNodes('cac:PaymentMeans', $ns)) {
+            [void] $candidatos.Add(@('PaymentMeans/PaymentDueDate',
+                (TextoDe $pm 'cbc:PaymentDueDate' $ns)))
+        }
+        foreach ($c in $candidatos) {
+            $vence = $c[1]
+            if ([string]::IsNullOrWhiteSpace($vence)) { continue }
+            $vence = $vence.Trim()
+            # Formato ISO YYYY-MM-DD: comparar como texto ya ordena bien.
+            if ([string]::CompareOrdinal($vence, $emision) -lt 0) {
+                [void] $avisos.Add(
+                    "La fecha de vencimiento ($($c[0])) es ANTERIOR a la de emision.`r`n" +
+                    "    Emision $emision, vencimiento $vence. Una de las dos esta mal.`r`n" +
+                    "    NO la toque: cual corregir lo decides tu, y ademas la fecha de emision`r`n" +
+                    "    entra dentro del CUFE, asi que hay que arreglarla en tu software y`r`n" +
+                    "    volver a pasar el XML por el robot.")
+            }
+        }
+    }
+
     # El ambiente lo dice el propio XML en ProfileExecutionID, y es lo que va a
     # ver la DIAN. Se prefiere ese dato antes que el de config.ini: si el config
     # dice 2 y la factura es de produccion, el CUFE sale mal y el rechazo no

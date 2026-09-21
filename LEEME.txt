@@ -18,6 +18,11 @@ Que revisa y corrige
     del bloque LegalMonetaryTotal.
   - Recalcula el CUFE (SHA-384) con los valores ya corregidos y lo reemplaza.
 
+Ademas AVISA (sin tocar nada) si la fecha de vencimiento quedo antes que la
+de emision, o si el ambiente del config.ini no coincide con el del XML. Los
+avisos salen en el informe con la palabra OJO. Si ves un OJO, revisa antes
+de firmar.
+
 Sirve para Factura, Nota Credito y Nota Debito.
 
 

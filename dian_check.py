@@ -584,6 +584,40 @@ def is_signed(root):
     return False
 
 
+def check_dates(root, avisos):
+    """Avisa si la fecha de vencimiento quedo ANTES que la de emision.
+
+    No se corrige nunca: cual de las dos esta mal es decision del que factura,
+    y ademas la fecha de emision entra dentro del CUFE. Solo se avisa.
+    """
+    emision = text_of(root, "cbc:IssueDate")
+    if not emision:
+        return
+    emision = emision.strip()
+
+    candidatos = [("DueDate", text_of(root, "cbc:DueDate"))]
+    for pm in root.findall("cac:PaymentMeans", NS):
+        candidatos.append(("PaymentMeans/PaymentDueDate",
+                           text_of(pm, "cbc:PaymentDueDate")))
+
+    for nombre, vence in candidatos:
+        if not vence:
+            continue
+        vence = vence.strip()
+        # Formato ISO YYYY-MM-DD: comparar como texto ya ordena bien.
+        if vence < emision:
+            avisos.append(
+                f"La fecha de vencimiento ({nombre}) es ANTERIOR a la de "
+                "emision.\n"
+                f"    Emision {emision}, vencimiento {vence}. Una de las dos "
+                "esta mal.\n"
+                "    NO la toque: cual corregir lo decides tu, y ademas la "
+                "fecha de emision\n"
+                "    entra dentro del CUFE, asi que hay que arreglarla en tu "
+                "software y\n"
+                "    volver a pasar el XML por el robot.")
+
+
 def procesar(xml_path, clave_tecnica=None, ambiente=None):
     """Valida y corrige un XML en memoria. Devuelve un dict con el resultado.
 
@@ -603,6 +637,8 @@ def procesar(xml_path, clave_tecnica=None, ambiente=None):
     check_document_taxable_base(root, issues, fix=True)
     check_tax_totals(root, "totales", issues, fix=True)
     totals = check_monetary_total(root, sum_lines, issues, orig, avisos, fix=True)
+
+    check_dates(root, avisos)
 
     # El ambiente lo dice el propio XML en ProfileExecutionID, y es lo que va
     # a ver la DIAN. Se prefiere ese dato antes que el de config.ini: si el
