@@ -1,5 +1,5 @@
 Factura de ejemplo con 8 descuadres de centavos puestos a proposito.
 Sirve para probar el robot antes de tocar una factura real.
 
-Arrastra FACTURA_EJEMPLO_CON_ERRORES.xml sobre 1_CORREGIR_ARRASTRANDO.bat
+Arrastra FACTURA_EJEMPLO_CON_ERRORES.xml sobre CORREGIR_ARRASTRANDO.bat
 y mira el _informe.txt que aparece al lado: debe listar los 8.

@@ -22,19 +22,39 @@ Sirve para Factura, Nota Credito y Nota Debito.
 
 
 -----------------------------------------------------------
- INSTALACION (una sola vez)
+ DOS VERSIONES - ELIGE UNA
 -----------------------------------------------------------
-1. Instala Python desde  https://www.python.org/downloads/
-   En la PRIMERA pantalla del instalador marca la casilla
-   "Add Python to PATH" y luego Install. Nada mas.
+Hacen exactamente lo mismo. Comprobado: sobre la misma factura las dos
+sacan los mismos descuadres y el mismo CUFE, caracter por caracter.
 
-2. Abre  config.ini  con el Bloc de notas y pon:
+  A) PowerShell  ->  NO HAY QUE INSTALAR NADA.
+     PowerShell ya viene con Windows. Usa estos:
+         CORREGIR_ARRASTRANDO.bat
+         VIGILAR_CARPETA.bat
+     Esta es la recomendada.
+
+  B) Python  ->  hay que instalar Python una vez. Usa estos:
+         python_CORREGIR_ARRASTRANDO.bat
+         python_VIGILAR_CARPETA.bat
+     Solo si prefieres Python por algo. Si no, ignora estos dos.
+
+
+-----------------------------------------------------------
+ PREPARACION (una sola vez)
+-----------------------------------------------------------
+Abre  config.ini  con el Bloc de notas y pon:
+
       clave_tecnica = (la clave tecnica de tu software, del portal DIAN)
       ambiente      = 1 si es produccion, 2 si es habilitacion
-   Guarda y cierra.
 
-   Sin la clave tecnica el robot igual corrige los valores, pero NO puede
-   calcular el CUFE, porque la clave entra dentro del hash.
+Guarda y cierra. Eso es todo.
+
+Sin la clave tecnica el robot igual corrige los valores, pero NO puede
+calcular el CUFE, porque la clave entra dentro del hash. Te lo avisa.
+
+Solo si eliges la version B: instala Python desde
+https://www.python.org/downloads/ y en la PRIMERA pantalla del instalador
+marca la casilla "Add Python to PATH".
 
 
 -----------------------------------------------------------
@@ -42,10 +62,10 @@ Sirve para Factura, Nota Credito y Nota Debito.
 -----------------------------------------------------------
 Arrastra uno o varios XML (o una carpeta entera) encima de
 
-      1_CORREGIR_ARRASTRANDO.bat
+      CORREGIR_ARRASTRANDO.bat
 
 Al lado de cada XML quedan dos archivos:
-      FACTURA_corregido.xml   <- el que se firma y se envia
+      FACTURA_corregido.xml   <- el que pasas a tu .bat de firma y envio
       FACTURA_informe.txt     <- que estaba mal y en cuanto
 
 
@@ -54,7 +74,7 @@ Al lado de cada XML quedan dos archivos:
 -----------------------------------------------------------
 Haz doble clic en
 
-      2_VIGILAR_CARPETA.bat
+      VIGILAR_CARPETA.bat
 
 y deja la ventana abierta. Todo XML que aparezca en la carpeta "entrada"
 se corrige solo y sale en la carpeta "salida". El original se guarda en
