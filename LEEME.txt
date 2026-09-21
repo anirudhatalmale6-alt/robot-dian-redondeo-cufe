@@ -1,0 +1,83 @@
+===========================================================
+ ROBOT DIAN - corrige el redondeo del XML y recalcula el CUFE
+===========================================================
+
+Para que sirve
+--------------
+Tu software genera el XML con centavos descuadrados y la DIAN lo rechaza.
+Mientras el proveedor arregla el software, este robot toma el XML, corrige
+los valores y le pone el CUFE nuevo. Asi no hay que esperarlos.
+
+Que revisa y corrige
+--------------------
+  - Por cada linea:  LineExtensionAmount = cantidad x precio (2 decimales),
+    aplicando descuentos y cargos de la linea.
+  - Por cada impuesto:  TaxAmount = base x tarifa (2 decimales).
+  - Que la base gravable del documento sea la suma de las bases de las lineas.
+  - Los totales:  LineExtensionAmount, TaxInclusiveAmount y PayableAmount
+    del bloque LegalMonetaryTotal.
+  - Recalcula el CUFE (SHA-384) con los valores ya corregidos y lo reemplaza.
+
+Sirve para Factura, Nota Credito y Nota Debito.
+
+
+-----------------------------------------------------------
+ INSTALACION (una sola vez)
+-----------------------------------------------------------
+1. Instala Python desde  https://www.python.org/downloads/
+   En la PRIMERA pantalla del instalador marca la casilla
+   "Add Python to PATH" y luego Install. Nada mas.
+
+2. Abre  config.ini  con el Bloc de notas y pon:
+      clave_tecnica = (la clave tecnica de tu software, del portal DIAN)
+      ambiente      = 1 si es produccion, 2 si es habilitacion
+   Guarda y cierra.
+
+   Sin la clave tecnica el robot igual corrige los valores, pero NO puede
+   calcular el CUFE, porque la clave entra dentro del hash.
+
+
+-----------------------------------------------------------
+ USO - FORMA 1: arrastrar
+-----------------------------------------------------------
+Arrastra uno o varios XML (o una carpeta entera) encima de
+
+      1_CORREGIR_ARRASTRANDO.bat
+
+Al lado de cada XML quedan dos archivos:
+      FACTURA_corregido.xml   <- el que se firma y se envia
+      FACTURA_informe.txt     <- que estaba mal y en cuanto
+
+
+-----------------------------------------------------------
+ USO - FORMA 2: carpeta vigilada (desatendido)
+-----------------------------------------------------------
+Haz doble clic en
+
+      2_VIGILAR_CARPETA.bat
+
+y deja la ventana abierta. Todo XML que aparezca en la carpeta "entrada"
+se corrige solo y sale en la carpeta "salida". El original se guarda en
+"procesados" (o en "errores" si el archivo estaba dañado).
+
+Si quieres que vigile directamente la carpeta donde tu software deja los
+XML, en config.ini cambia:
+
+      entrada = C:\ruta\donde\tu\software\deja\los\xml
+
+Todo queda registrado en  registro.csv  (se abre con Excel): fecha,
+archivo, cuantos descuadres tenia, CUFE anterior y CUFE nuevo.
+
+
+-----------------------------------------------------------
+ IMPORTANTE - EL ORDEN IMPORTA
+-----------------------------------------------------------
+El robot tiene que trabajar ANTES de la firma:
+
+      tu software genera el XML  ->  ROBOT  ->  firma  ->  envio a DIAN
+
+Si el XML ya viene firmado y le cambiamos un centavo, la firma deja de
+validar. El robot lo detecta y te lo avisa en el informe, pero ese archivo
+hay que volver a firmarlo antes de mandarlo.
+
+El robot NO firma y NO envia nada a la DIAN. Solo corrige el XML.

@@ -1,0 +1,7 @@
+__pycache__/
+registro.csv
+entrada/*.xml
+salida/*
+procesados/*
+errores/*
+!*/.gitkeep
