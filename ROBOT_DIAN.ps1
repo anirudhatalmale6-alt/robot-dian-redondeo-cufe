@@ -274,7 +274,123 @@ function Revisar-Lineas($raiz, $ns, $descuadres) {
     return R2 $sumaTotal
 }
 
-function Revisar-Totales($raiz, [decimal] $sumaLineas, $ns, $descuadres) {
+$TOTAL_FIELDS = @('LineExtensionAmount', 'TaxExclusiveAmount', 'TaxInclusiveAmount',
+                  'AllowanceTotalAmount', 'ChargeTotalAmount', 'PrepaidAmount',
+                  'PayableAmount')
+
+function Get-FotoTotales($raiz, $ns) {
+    # Los totales TAL COMO VENIAN, antes de corregir nada. Es la unica
+    # evidencia de con que formula los armo el software que emitio el XML.
+    $lmt = $raiz.SelectSingleNode('cac:LegalMonetaryTotal', $ns)
+    if ($null -eq $lmt) { $lmt = $raiz.SelectSingleNode('cac:RequestedMonetaryTotal', $ns) }
+    $foto = @{}
+    if ($null -ne $lmt) {
+        foreach ($nombre in $TOTAL_FIELDS) {
+            $foto[$nombre] = TextoDe $lmt "cbc:$nombre" $ns
+        }
+    }
+    $imp = Get-ImpuestoDocumento $raiz $ns
+    $foto['_tax'] = $imp[1]
+    return $foto
+}
+
+function Get-BaseInclusive($foto, [decimal] $baseExclusive, [decimal] $sumaLineas) {
+    # DOS convenciones para TaxInclusiveAmount, hay que respetar la del
+    # software que emitio el XML y nunca imponer una:
+    #   (a) UBL puro:  TaxInclusiveAmount = TaxExclusiveAmount + impuestos
+    #   (b) DIAN:      TaxInclusiveAmount = LineExtensionAmount + impuestos
+    # Con descuento a nivel documento las dos difieren EN TODO EL DESCUENTO.
+    $tiaTexto = $foto['TaxInclusiveAmount']
+    if ([string]::IsNullOrWhiteSpace($tiaTexto)) {
+        return @('TaxExclusiveAmount', $baseExclusive)
+    }
+    $tia = R2 (ToDec $tiaTexto)
+    $tax = [decimal] $foto['_tax']
+    $candidatos = @(
+        @('TaxExclusiveAmount', $baseExclusive),
+        @('LineExtensionAmount', $sumaLineas)
+    )
+    foreach ($c in $candidatos) {
+        $orig = $foto[$c[0]]
+        if ([string]::IsNullOrWhiteSpace($orig)) { continue }
+        if ((R2 ((ToDec $orig) + $tax)) -eq $tia) { return @($c[0], $c[1]) }
+    }
+    # Tolerancia de 1 peso: la DIAN la admite y los redondeos por linea la
+    # producen solos. Sin esto un descuadre de centavos pareceria "formula
+    # desconocida" y se dejaria sin corregir un documento que si se puede.
+    foreach ($c in $candidatos) {
+        $orig = $foto[$c[0]]
+        if ([string]::IsNullOrWhiteSpace($orig)) { continue }
+        if ([Math]::Abs((R2 ((ToDec $orig) + $tax)) - $tia) -le [decimal] 1) {
+            return @($c[0], $c[1])
+        }
+    }
+    return @($null, [decimal] 0)
+}
+
+function Resolver-Descuento($raiz, $lmt, $foto, [decimal] $sumaLineas,
+                            [decimal] $baseExclusive, [decimal] $cargos,
+                            $ns, $descuadres, $avisos) {
+    # Mantiene  bruto - descuentos + cargos = base gravable.  Al corregir el
+    # bruto y la base, el descuento queda desfasado; si no se reconcilia la
+    # DIAN rechaza el documento por OTRA regla y volvemos a empezar.
+    $allowNodo = $lmt.SelectSingleNode('cbc:AllowanceTotalAmount', $ns)
+    $actual = [decimal] 0
+    if ($null -ne $allowNodo) { $actual = R2 (ToDec $allowNodo.InnerText) }
+
+    $oBruto = $foto['LineExtensionAmount']
+    $oBase = $foto['TaxExclusiveAmount']
+    $oDesc = $foto['AllowanceTotalAmount']
+    if ([string]::IsNullOrWhiteSpace($oBruto) -or
+        [string]::IsNullOrWhiteSpace($oBase) -or
+        [string]::IsNullOrWhiteSpace($oDesc)) { return $actual }
+
+    $oCargo = ToDec $foto['ChargeTotalAmount']
+    # Solo se toca si el ORIGINAL ya cumplia la relacion: si no la cumplia,
+    # no es la formula de este software y no hay nada que preservar.
+    if ((R2 ((ToDec $oBruto) - (ToDec $oDesc) + $oCargo)) -ne (R2 (ToDec $oBase))) {
+        return $actual
+    }
+
+    $requerido = R2 ($sumaLineas - $baseExclusive + $cargos)
+    if ($requerido -eq $actual) { return $actual }
+
+    $todos = $raiz.SelectNodes('cac:AllowanceCharge', $ns)
+    $descuentos = @(); $listaCargos = @()
+    foreach ($ac in $todos) {
+        $ind = TextoDe $ac 'cbc:ChargeIndicator' $ns
+        if ($null -ne $ind -and $ind.Trim().ToLower() -eq 'true') {
+            $listaCargos += $ac
+        } else { $descuentos += $ac }
+    }
+
+    if ($descuentos.Count -ne 1 -or $listaCargos.Count -gt 0) {
+        [void] $avisos.Add(
+            "El descuento del documento quedo desfasado al corregir el valor bruto.`r`n" +
+            "    AllowanceTotalAmount dice $actual, y para que cuadre bruto - descuento = base`r`n" +
+            "    tendria que ser $(Fmt $requerido). NO lo toque porque hay $($descuentos.Count) descuento(s)`r`n" +
+            "    y $($listaCargos.Count) cargo(s), y no se a cual imputarle la diferencia. Revisalo a mano.")
+        return $actual
+    }
+
+    $hallado = $null
+    if ($null -ne $allowNodo) { $hallado = $allowNodo.InnerText }
+    $descuadres.Add((Nuevo-Descuadre 'totales' 'AllowanceTotalAmount' $hallado `
+        (Fmt $requerido) ("para que cuadre bruto $(Fmt $sumaLineas) - descuento = " +
+        "base gravable $(Fmt $baseExclusive)"))) | Out-Null
+
+    if ($null -ne $allowNodo) { $allowNodo.InnerText = Fmt $requerido }
+    # El AllowanceCharge tiene que decir lo mismo que el total.
+    $ac = $descuentos[0]
+    $montoNodo = $ac.SelectSingleNode('cbc:Amount', $ns)
+    if ($null -ne $montoNodo) { $montoNodo.InnerText = Fmt $requerido }
+    $baseNodo = $ac.SelectSingleNode('cbc:BaseAmount', $ns)
+    if ($null -ne $baseNodo) { $baseNodo.InnerText = Fmt $sumaLineas }
+    return $requerido
+}
+
+function Revisar-Totales($raiz, [decimal] $sumaLineas, $ns, $descuadres,
+                         $foto, $avisos) {
     $lmt = $raiz.SelectSingleNode('cac:LegalMonetaryTotal', $ns)
     if ($null -eq $lmt) { $lmt = $raiz.SelectSingleNode('cac:RequestedMonetaryTotal', $ns) }
     if ($null -eq $lmt) {
@@ -294,9 +410,29 @@ function Revisar-Totales($raiz, [decimal] $sumaLineas, $ns, $descuadres) {
         $leaNodo.InnerText = Fmt $sumaLineas
     }
 
+    # Base gravable del documento = suma de las bases gravables de las lineas.
     $teaNodo = $lmt.SelectSingleNode('cbc:TaxExclusiveAmount', $ns)
-    $baseInclusive = $sumaLineas
-    if ($null -ne $teaNodo) { $baseInclusive = R2 (ToDec $teaNodo.InnerText) }
+    $baseLineas = [decimal] 0
+    foreach ($linea in (Get-Lineas $raiz $ns)) {
+        foreach ($tt in $linea.SelectNodes('cac:TaxTotal', $ns)) {
+            foreach ($st in $tt.SelectNodes('cac:TaxSubtotal', $ns)) {
+                $baseLineas += R2 (ToDec (TextoDe $st 'cbc:TaxableAmount' $ns))
+            }
+        }
+    }
+    if ($baseLineas -eq 0) { $baseLineas = $sumaLineas }
+    $baseLineas = R2 $baseLineas
+
+    $baseExclusive = $sumaLineas
+    if ($null -ne $teaNodo) {
+        if ((R2 (ToDec $teaNodo.InnerText)) -ne $baseLineas) {
+            $descuadres.Add((Nuevo-Descuadre 'totales' 'TaxExclusiveAmount' `
+                $teaNodo.InnerText (Fmt $baseLineas) `
+                'debe ser la suma de las bases gravables de las lineas')) | Out-Null
+            $teaNodo.InnerText = Fmt $baseLineas
+        }
+        $baseExclusive = $baseLineas
+    }
 
     $dc = Get-DescuentosCargos $raiz $ns
     $docDesc = $dc[0]; $docCargos = $dc[1]
@@ -331,15 +467,40 @@ function Revisar-Totales($raiz, [decimal] $sumaLineas, $ns, $descuadres) {
     $prepaid = [decimal] 0
     if ($null -ne $prepaidNodo) { $prepaid = R2 (ToDec $prepaidNodo.InnerText) }
 
+    $allow = Resolver-Descuento $raiz $lmt $foto $sumaLineas $baseExclusive `
+        $charge $ns $descuadres $avisos
+
     $tiaNodo = $lmt.SelectSingleNode('cbc:TaxInclusiveAmount', $ns)
+    $det = Get-BaseInclusive $foto $baseExclusive $sumaLineas
+    $baseNombre = $det[0]
+    $baseInclusive = [decimal] $det[1]
+
+    if ($null -eq $baseNombre) {
+        # El XML no cuadra con ninguna de las dos convenciones. No se adivina.
+        [void] $avisos.Add(
+            "NO pude deducir con que formula tu software calcula TaxInclusiveAmount.`r`n" +
+            "    En el XML original vale $($foto['TaxInclusiveAmount']), y no coincide`r`n" +
+            "    ni con base gravable + impuestos ni con valor bruto + impuestos.`r`n" +
+            "    Por seguridad NO lo toque, ni tampoco PayableAmount. Revisalos a mano`r`n" +
+            "    antes de enviar, porque de ahi sale el total a pagar.")
+        $pagar = [decimal] 0
+        $payNodoX = $lmt.SelectSingleNode('cbc:PayableAmount', $ns)
+        if ($null -ne $payNodoX) { $pagar = R2 (ToDec $payNodoX.InnerText) }
+        return [PSCustomObject]@{
+            SumaLineas = $sumaLineas; Impuestos = $totalImpuesto; Pagar = $pagar
+        }
+    }
+
     $tiaEsperado = R2 ($baseInclusive + $totalImpuesto)
     $tia = $tiaEsperado
     if ($null -eq $tiaNodo -or (R2 (ToDec $tiaNodo.InnerText)) -ne $tiaEsperado) {
+        $etiqueta = 'base gravable'
+        if ($baseNombre -eq 'LineExtensionAmount') { $etiqueta = 'valor bruto' }
         $hallado = $null
         if ($null -ne $tiaNodo) { $hallado = $tiaNodo.InnerText }
         $descuadres.Add((Nuevo-Descuadre 'totales' 'TaxInclusiveAmount' `
             $hallado (Fmt $tiaEsperado) `
-            "TaxExclusiveAmount $(Fmt $baseInclusive) + impuestos $(Fmt $totalImpuesto)")) | Out-Null
+            "$etiqueta $(Fmt $baseInclusive) + impuestos $(Fmt $totalImpuesto) (formula de tu software)")) | Out-Null
         if ($null -ne $tiaNodo) { $tiaNodo.InnerText = Fmt $tiaEsperado }
     } else {
         $tia = R2 (ToDec $tiaNodo.InnerText)
@@ -428,11 +589,15 @@ function Invoke-Xml([string] $ruta, [string] $claveTecnica, [string] $ambiente) 
     $ns = Get-Ns $doc
     $raiz = $doc.DocumentElement
     $descuadres = New-Object System.Collections.ArrayList
+    $avisos = New-Object System.Collections.ArrayList
+    # La foto se toma ANTES de cualquier correccion: es la unica evidencia de
+    # con que formula venia armado el documento.
+    $foto = Get-FotoTotales $raiz $ns
 
     $sumaLineas = Revisar-Lineas $raiz $ns $descuadres
     Revisar-BaseDocumento $raiz $ns $descuadres
     Revisar-Impuestos $raiz 'totales' $ns $descuadres
-    $totales = Revisar-Totales $raiz $sumaLineas $ns $descuadres
+    $totales = Revisar-Totales $raiz $sumaLineas $ns $descuadres $foto $avisos
 
     $uuidNodo = $raiz.SelectSingleNode('cbc:UUID', $ns)
     $cufeAnterior = $null
@@ -454,6 +619,7 @@ function Invoke-Xml([string] $ruta, [string] $claveTecnica, [string] $ambiente) 
         Tipo = $raiz.LocalName
         Lineas = (Get-Lineas $raiz $ns).Count
         Descuadres = $descuadres
+        Avisos = $avisos
         Totales = $totales
         Firmado = (Test-Firmado $raiz)
         CufeAnterior = $cufeAnterior
@@ -479,6 +645,11 @@ function Get-Informe($r, [string] $nombre, [string] $claveTecnica) {
         [void] $out.Add('    firmarlo antes de enviarlo a la DIAN. ***')
     }
     [void] $out.Add('')
+
+    foreach ($aviso in $r.Avisos) {
+        [void] $out.Add('*** OJO: ' + $aviso)
+        [void] $out.Add('')
+    }
 
     if ($r.Descuadres.Count -gt 0) {
         [void] $out.Add("DESCUADRES ENCONTRADOS: $($r.Descuadres.Count)")

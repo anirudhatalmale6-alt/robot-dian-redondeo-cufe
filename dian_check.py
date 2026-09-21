@@ -251,7 +251,133 @@ def check_document_taxable_base(root, issues, fix=False):
 # ---------------------------------------------------------------- totales
 
 
-def check_monetary_total(root, sum_lines, issues, fix=False):
+TOTAL_FIELDS = ("LineExtensionAmount", "TaxExclusiveAmount", "TaxInclusiveAmount",
+                "AllowanceTotalAmount", "ChargeTotalAmount", "PrepaidAmount",
+                "PayableAmount")
+
+
+def snapshot_totals(root):
+    """Guarda los totales y el impuesto TAL COMO VENIAN, antes de corregir nada.
+
+    Hace falta para deducir con que formula trabaja el software que emitio el
+    XML. Si se mira despues de corregir, ya se perdio la evidencia.
+    """
+    lmt = root.find("cac:LegalMonetaryTotal", NS)
+    if lmt is None:
+        lmt = root.find("cac:RequestedMonetaryTotal", NS)
+    snap = {}
+    if lmt is not None:
+        for name in TOTAL_FIELDS:
+            snap[name] = text_of(lmt, f"cbc:{name}")
+    _, snap["_tax"] = document_tax_total(root)
+    return snap
+
+
+def reconcile_allowance(root, lmt, orig, sum_lines, base_exclusive, charge_v,
+                        issues, avisos, fix):
+    """Mantiene la relacion  bruto - descuentos + cargos = base gravable.
+
+    Al corregir el bruto y la base, el descuento del documento se queda
+    desfasado. Si no se reconcilia, la DIAN rechaza el documento por OTRA
+    regla y volvemos a empezar.
+
+    Solo se toca si el documento ORIGINAL ya cumplia esa relacion: si no la
+    cumplia, no es la formula de este software y no hay nada que preservar.
+    Devuelve el valor de descuento a usar de aqui en adelante.
+    """
+    allow_node = lmt.find("cbc:AllowanceTotalAmount", NS)
+    actual = r2(d(allow_node.text)) if allow_node is not None else Decimal("0")
+
+    o_gross = orig.get("LineExtensionAmount")
+    o_base = orig.get("TaxExclusiveAmount")
+    o_allow = orig.get("AllowanceTotalAmount")
+    if o_gross is None or o_base is None or o_allow is None:
+        return actual
+
+    o_charge = d(orig.get("ChargeTotalAmount"))
+    cumplia = r2(d(o_gross) - d(o_allow) + o_charge) == r2(d(o_base))
+    if not cumplia:
+        return actual
+
+    required = r2(sum_lines - base_exclusive + charge_v)
+    if required == actual:
+        return actual
+
+    # Solo se reparte solo si hay UN descuento y ningun cargo. Con varios no
+    # hay forma de saber a cual imputarle la diferencia.
+    cargos = [ac for ac in root.findall("cac:AllowanceCharge", NS)
+              if (text_of(ac, "cbc:ChargeIndicator") or "false").strip().lower() == "true"]
+    descuentos = [ac for ac in root.findall("cac:AllowanceCharge", NS)
+                  if (text_of(ac, "cbc:ChargeIndicator") or "false").strip().lower() != "true"]
+
+    if len(descuentos) != 1 or cargos:
+        avisos.append(
+            "El descuento del documento quedo desfasado al corregir el valor "
+            "bruto.\n"
+            f"    AllowanceTotalAmount dice {actual}, y para que cuadre "
+            f"bruto - descuento = base\n"
+            f"    tendria que ser {fmt(required)}. NO lo toque porque hay "
+            f"{len(descuentos)} descuento(s)\n"
+            f"    y {len(cargos)} cargo(s), y no se a cual imputarle la "
+            "diferencia. Revisalo a mano.")
+        return actual
+
+    issues.append(Issue("totales", "AllowanceTotalAmount", allow_node.text if allow_node is not None else None,
+                        fmt(required),
+                        f"para que cuadre bruto {fmt(sum_lines)} - descuento = "
+                        f"base gravable {fmt(base_exclusive)}"))
+    if fix:
+        if allow_node is not None:
+            allow_node.text = fmt(required)
+        # El AllowanceCharge tiene que decir lo mismo que el total.
+        ac = descuentos[0]
+        monto_node = ac.find("cbc:Amount", NS)
+        if monto_node is not None:
+            monto_node.text = fmt(required)
+        base_node = ac.find("cbc:BaseAmount", NS)
+        if base_node is not None:
+            base_node.text = fmt(sum_lines)
+    return required
+
+
+def inclusive_base(orig, base_exclusive, sum_lines):
+    """Deduce que campo usa el software como base del TaxInclusiveAmount.
+
+    Devuelve (nombre_del_campo, valor_corregido_de_esa_base), o (None, None)
+    si el XML original no cuadra con ninguna de las dos convenciones.
+    """
+    tia = orig.get("TaxInclusiveAmount")
+    if tia is None:
+        # Sin dato original no hay nada que deducir: se usa el estandar UBL.
+        return "TaxExclusiveAmount", base_exclusive
+
+    tia = r2(d(tia))
+    tax = orig.get("_tax", Decimal("0"))
+    candidatos = (
+        ("TaxExclusiveAmount", base_exclusive),
+        ("LineExtensionAmount", sum_lines),
+    )
+    for nombre, corregido in candidatos:
+        original = orig.get(nombre)
+        if original is None:
+            continue
+        if r2(d(original) + tax) == tia:
+            return nombre, corregido
+
+    # Tolerancia de 1 peso: la DIAN la admite y los redondeos por linea la
+    # producen sola. Sin esto un descuadre de centavos pareceria "formula
+    # desconocida" y se dejaria de corregir un documento que si se puede.
+    for nombre, corregido in candidatos:
+        original = orig.get(nombre)
+        if original is None:
+            continue
+        if abs(r2(d(original) + tax) - tia) <= Decimal("1.00"):
+            return nombre, corregido
+
+    return None, None
+
+
+def check_monetary_total(root, sum_lines, issues, orig, avisos, fix=False):
     lmt = root.find("cac:LegalMonetaryTotal", NS)
     if lmt is None:
         lmt = root.find("cac:RequestedMonetaryTotal", NS)
@@ -274,10 +400,22 @@ def check_monetary_total(root, sum_lines, issues, fix=False):
         if fix and lea_node is not None:
             lea_node.text = fmt(sum_lines)
 
+    # TaxExclusiveAmount = base gravable del documento. Debe cuadrar con la
+    # suma de las bases gravables de las lineas, que es lo que ya se corrigio
+    # en los TaxSubtotal.
     tea_node, tea = node_and_value("TaxExclusiveAmount")
-    # TaxExclusiveAmount = base gravable; se respeta la del XML si existe,
-    # pero debe ser coherente con TaxInclusiveAmount.
-    base_for_inclusive = r2(d(tea)) if tea is not None else sum_lines
+    base_lines = sum(line_taxable_by_scheme(root).values()) or sum_lines
+    base_lines = r2(base_lines)
+    if tea is not None and r2(d(tea)) != base_lines:
+        issues.append(Issue(where, "TaxExclusiveAmount", tea, fmt(base_lines),
+                            "debe ser la suma de las bases gravables de las lineas"))
+        if fix and tea_node is not None:
+            tea_node.text = fmt(base_lines)
+        base_exclusive = base_lines
+    elif tea is not None:
+        base_exclusive = r2(d(tea))
+    else:
+        base_exclusive = sum_lines
 
     allow_node, allow = node_and_value("AllowanceTotalAmount")
     charge_node, charge = node_and_value("ChargeTotalAmount")
@@ -300,18 +438,59 @@ def check_monetary_total(root, sum_lines, issues, fix=False):
             charge_node.text = fmt(doc_charge)
             charge_v = r2(doc_charge)
 
+    # ------------------------------------------------------------------
+    # TaxInclusiveAmount: hay DOS convenciones en uso y hay que respetar la
+    # del software que emitio el XML, nunca imponer una.
+    #   (a) UBL puro:  TaxInclusiveAmount = TaxExclusiveAmount + impuestos
+    #   (b) DIAN:      TaxInclusiveAmount = LineExtensionAmount + impuestos
+    #                  ("Total valor bruto mas tributos")
+    # Con descuento a nivel documento las dos difieren EN TODO EL DESCUENTO.
+    # Elegir la equivocada mueve el total a pagar millones de pesos.
+    # ------------------------------------------------------------------
+    allow_v = reconcile_allowance(root, lmt, orig, sum_lines, base_exclusive,
+                                  charge_v, issues, avisos, fix)
+
     tia_node, tia = node_and_value("TaxInclusiveAmount")
-    expected_tia = r2(base_for_inclusive + total_tax)
-    if tia is None or r2(d(tia)) != expected_tia:
-        issues.append(Issue(where, "TaxInclusiveAmount", tia, fmt(expected_tia),
-                            f"TaxExclusiveAmount {fmt(base_for_inclusive)} + impuestos {fmt(total_tax)}"))
-        if fix and tia_node is not None:
-            tia_node.text = fmt(expected_tia)
-        tia_value = expected_tia
+    base_name, base_inclusive = inclusive_base(orig, base_exclusive, sum_lines)
+
+    if base_name is None:
+        # El XML original no cuadra con ninguna de las dos. No se adivina:
+        # se deja como esta y se avisa para revision manual.
+        avisos.append(
+            "NO pude deducir con que formula tu software calcula "
+            "TaxInclusiveAmount.\n"
+            f"    En el XML original vale {orig.get('TaxInclusiveAmount')}, y no "
+            "coincide\n"
+            "    ni con base gravable + impuestos ni con valor bruto + "
+            "impuestos.\n"
+            "    Por seguridad NO lo toque, ni tampoco PayableAmount. "
+            "Revisalos a mano\n"
+            "    antes de enviar, porque de ahi sale el total a pagar.")
+        tia_value = r2(d(tia)) if tia is not None else Decimal("0")
     else:
-        tia_value = r2(d(tia))
+        expected_tia = r2(base_inclusive + total_tax)
+        etiqueta = ("valor bruto" if base_name == "LineExtensionAmount"
+                    else "base gravable")
+        if tia is None or r2(d(tia)) != expected_tia:
+            issues.append(Issue(where, "TaxInclusiveAmount", tia, fmt(expected_tia),
+                                f"{etiqueta} {fmt(base_inclusive)} + impuestos "
+                                f"{fmt(total_tax)} (formula de tu software)"))
+            if fix and tia_node is not None:
+                tia_node.text = fmt(expected_tia)
+            tia_value = expected_tia
+        else:
+            tia_value = r2(d(tia))
 
     pay_node, pay = node_and_value("PayableAmount")
+    if base_name is None:
+        # Sin saber la formula del TaxInclusiveAmount, tocar el total a pagar
+        # seria adivinar con el dinero del cliente.
+        return {
+            "line_extension": sum_lines,
+            "tax_total": total_tax,
+            "payable": r2(d(pay)) if pay is not None else Decimal("0"),
+        }
+
     expected_pay = r2(tia_value - allow_v + charge_v - prepaid_v)
     if pay is None or r2(d(pay)) != expected_pay:
         issues.append(Issue(where, "PayableAmount", pay, fmt(expected_pay),
@@ -412,6 +591,10 @@ def procesar(xml_path, clave_tecnica=None, ambiente=None):
     """
     tree, root = load(xml_path)
     issues = []
+    avisos = []
+    # La foto se toma ANTES de cualquier correccion: es la unica evidencia de
+    # con que formula venia armado el documento.
+    orig = snapshot_totals(root)
 
     # Las correcciones se aplican SIEMPRE sobre el arbol en memoria: asi el
     # informe y el CUFE describen el documento corregido, no el roto. Cada
@@ -419,7 +602,7 @@ def procesar(xml_path, clave_tecnica=None, ambiente=None):
     sum_lines = check_lines(root, issues, fix=True)
     check_document_taxable_base(root, issues, fix=True)
     check_tax_totals(root, "totales", issues, fix=True)
-    totals = check_monetary_total(root, sum_lines, issues, fix=True)
+    totals = check_monetary_total(root, sum_lines, issues, orig, avisos, fix=True)
 
     cufe_xml, scheme = current_cufe(root)
     cadena = digest = None
@@ -437,6 +620,7 @@ def procesar(xml_path, clave_tecnica=None, ambiente=None):
         "doc_type": root.tag.split("}")[-1],
         "line_count": len(lines),
         "issues": issues,
+        "avisos": avisos,
         "totals": totals,
         "signed": is_signed(root),
         "cufe_anterior": cufe_xml,
@@ -463,6 +647,10 @@ def informe(result, xml_path, clave_tecnica=None):
         out.append("    valores la firma deja de validar. Hay que volver a")
         out.append("    firmarlo antes de enviarlo a la DIAN. ***")
     out.append("")
+
+    for aviso in result.get("avisos", []):
+        out.append("*** OJO: " + aviso)
+        out.append("")
 
     issues = result["issues"]
     if issues:
