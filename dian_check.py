@@ -618,7 +618,26 @@ def check_dates(root, avisos):
                 "    volver a pasar el XML por el robot.")
 
 
-def procesar(xml_path, clave_tecnica=None, ambiente=None):
+def secreto_del_documento(root, clave_tecnica, software_pin):
+    """Que secreto entra en el hash, segun el tipo de documento.
+
+    OJO, no son intercambiables:
+      - Factura de venta -> CUFE  -> CLAVE TECNICA (va con la resolucion de
+        numeracion).
+      - Nota credito / debito -> CUDE -> PIN DEL SOFTWARE. Las notas no tienen
+        rango de numeracion, por eso no usan clave tecnica.
+    Usar el de al lado da un hash valido en forma pero equivocado, y la DIAN
+    responde "CUFE/CUDE incorrecto" sin decir por que.
+
+    Devuelve (secreto, etiqueta_del_campo, nombre_del_codigo).
+    """
+    tipo = root.tag.split("}")[-1]
+    if tipo in ("CreditNote", "DebitNote"):
+        return software_pin, "software_pin", "CUDE"
+    return clave_tecnica, "clave_tecnica", "CUFE"
+
+
+def procesar(xml_path, clave_tecnica=None, ambiente=None, software_pin=None):
     """Valida y corrige un XML en memoria. Devuelve un dict con el resultado.
 
     No escribe nada a disco: de eso se encarga quien llama.
@@ -659,13 +678,22 @@ def procesar(xml_path, clave_tecnica=None, ambiente=None):
             "repita.")
 
     cufe_xml, scheme = current_cufe(root)
+    secreto, campo, codigo = secreto_del_documento(root, clave_tecnica,
+                                                   software_pin)
     cadena = digest = None
-    if clave_tecnica and ambiente:
+    if secreto and ambiente:
         # Se calcula sobre el arbol YA corregido, que es el que se va a firmar.
-        cadena, digest = build_cufe(root, clave_tecnica, str(ambiente))
+        cadena, digest = build_cufe(root, secreto, str(ambiente))
         node = root.find("cbc:UUID", NS)
         if node is not None:
             node.text = digest
+    elif ambiente:
+        avisos.append(
+            f"Este documento es un {root.tag.split('}')[-1]}, o sea que su "
+            f"codigo es el {codigo},\n"
+            f"    y el {codigo} se calcula con {campo}, que esta vacio en el "
+            "config.ini.\n"
+            f"    No lo calcule. Pon el {campo} y vuelve a pasar el archivo.")
 
     _, lines = line_nodes(root)
     return {
@@ -681,10 +709,11 @@ def procesar(xml_path, clave_tecnica=None, ambiente=None):
         "cufe_scheme": scheme,
         "cufe_nuevo": digest,
         "cadena_cufe": cadena,
+        "codigo": codigo,
     }
 
 
-def informe(result, xml_path, clave_tecnica=None):
+def informe(result, xml_path, clave_tecnica=None, software_pin=None):
     """Arma el texto del informe (el mismo que se imprime y se guarda a .txt)."""
     out = []
     out.append(f"Archivo: {xml_path}")
@@ -715,21 +744,26 @@ def informe(result, xml_path, clave_tecnica=None):
         out.append("Sin descuadres de redondeo. Todos los totales cierran a 2 decimales.")
     out.append("")
 
+    codigo = result.get("codigo", "CUFE")
     if result["cufe_anterior"]:
-        out.append(f"CUFE anterior ({result['cufe_scheme'] or 'sin schemeName'}): "
+        out.append(f"{codigo} anterior ({result['cufe_scheme'] or 'sin schemeName'}): "
                    f"{result['cufe_anterior']}")
     if result["cufe_nuevo"]:
         cadena = result["cadena_cufe"]
-        if clave_tecnica:
-            cadena = cadena.replace(clave_tecnica, "<CLAVE_TECNICA>")
-        out.append(f"Cadena CUFE: {cadena}")
-        out.append(f"CUFE nuevo:  {result['cufe_nuevo']}")
+        # Enmascarar SIEMPRE los dos: el secreto no puede quedar en un .txt
+        # que el cliente reenvia por ahi.
+        for secreto, etiqueta in ((clave_tecnica, "<CLAVE_TECNICA>"),
+                                  (software_pin, "<SOFTWARE_PIN>")):
+            if secreto:
+                cadena = cadena.replace(secreto, etiqueta)
+        out.append(f"Cadena {codigo}: {cadena}")
+        out.append(f"{codigo} nuevo:  {result['cufe_nuevo']}")
         if result["cufe_anterior"] and result["cufe_anterior"].lower() != result["cufe_nuevo"]:
-            out.append("  -> El CUFE cambio. El XML corregido ya lleva el nuevo.")
+            out.append(f"  -> El {codigo} cambio. El XML corregido ya lleva el nuevo.")
         elif result["cufe_anterior"]:
-            out.append("  -> El CUFE no cambio, ya estaba bien.")
-    else:
-        out.append("AVISO: sin clave tecnica y ambiente NO se puede recalcular el CUFE.")
+            out.append(f"  -> El {codigo} no cambio, ya estaba bien.")
+    elif not result.get("avisos"):
+        out.append(f"AVISO: falta el secreto o el ambiente, NO se recalculo el {codigo}.")
     return "\n".join(out)
 
 

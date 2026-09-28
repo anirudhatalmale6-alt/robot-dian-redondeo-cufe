@@ -584,7 +584,22 @@ function Test-Firmado($raiz) {
 
 # ----------------------------------------------------------------- proceso
 
-function Invoke-Xml([string] $ruta, [string] $claveTecnica, [string] $ambiente) {
+function Get-SecretoDocumento($raiz, [string] $claveTecnica, [string] $softwarePin) {
+    # OJO, no son intercambiables:
+    #   Factura de venta       -> CUFE -> CLAVE TECNICA (va con la resolucion
+    #                             de numeracion).
+    #   Nota credito / debito  -> CUDE -> PIN DEL SOFTWARE. Las notas no tienen
+    #                             rango de numeracion.
+    # Usar el de al lado da un hash bien formado pero equivocado, y la DIAN
+    # responde "CUFE/CUDE incorrecto" sin decir por que.
+    if ($raiz.LocalName -eq 'CreditNote' -or $raiz.LocalName -eq 'DebitNote') {
+        return @($softwarePin, 'software_pin', 'CUDE')
+    }
+    return @($claveTecnica, 'clave_tecnica', 'CUFE')
+}
+
+function Invoke-Xml([string] $ruta, [string] $claveTecnica, [string] $ambiente,
+                    [string] $softwarePin) {
     $doc = Get-Doc $ruta
     $ns = Get-Ns $doc
     $raiz = $doc.DocumentElement
@@ -652,11 +667,19 @@ function Invoke-Xml([string] $ruta, [string] $claveTecnica, [string] $ambiente) 
             "    el que valida la DIAN. Corrige el config.ini para que no se repita.")
     }
 
+    $sec = Get-SecretoDocumento $raiz $claveTecnica $softwarePin
+    $secreto = $sec[0]; $campo = $sec[1]; $codigo = $sec[2]
+
     $cadena = $null; $cufeNuevo = $null
-    if ($claveTecnica -and $ambiente) {
-        $r = Get-Cufe $raiz $ns $claveTecnica $ambiente
+    if ($secreto -and $ambiente) {
+        $r = Get-Cufe $raiz $ns $secreto $ambiente
         $cadena = $r[0]; $cufeNuevo = $r[1]
         if ($null -ne $uuidNodo) { $uuidNodo.InnerText = $cufeNuevo }
+    } elseif ($ambiente) {
+        [void] $avisos.Add(
+            "Este documento es un $($raiz.LocalName), o sea que su codigo es el $codigo,`r`n" +
+            "    y el $codigo se calcula con $campo, que esta vacio en el config.ini.`r`n" +
+            "    No lo calcule. Pon el $campo y vuelve a pasar el archivo.")
     }
 
     return [PSCustomObject]@{
@@ -671,10 +694,12 @@ function Invoke-Xml([string] $ruta, [string] $claveTecnica, [string] $ambiente) 
         EsquemaCufe = $esquemaCufe
         CufeNuevo = $cufeNuevo
         CadenaCufe = $cadena
+        Codigo = $codigo
     }
 }
 
-function Get-Informe($r, [string] $nombre, [string] $claveTecnica) {
+function Get-Informe($r, [string] $nombre, [string] $claveTecnica,
+                    [string] $softwarePin) {
     $out = New-Object System.Collections.ArrayList
     [void] $out.Add("Archivo: $nombre")
     [void] $out.Add("Tipo de documento: $($r.Tipo)  |  lineas: $($r.Lineas)")
@@ -704,23 +729,28 @@ function Get-Informe($r, [string] $nombre, [string] $claveTecnica) {
     }
     [void] $out.Add('')
 
+    $codigo = $r.Codigo
+    if (-not $codigo) { $codigo = 'CUFE' }
     if ($r.CufeAnterior) {
         $esq = $r.EsquemaCufe
         if (-not $esq) { $esq = 'sin schemeName' }
-        [void] $out.Add("CUFE anterior ($esq): $($r.CufeAnterior)")
+        [void] $out.Add("$codigo anterior ($esq): $($r.CufeAnterior)")
     }
     if ($r.CufeNuevo) {
         $cadena = $r.CadenaCufe
+        # Enmascarar SIEMPRE los dos: el secreto no puede quedar en un .txt
+        # que el cliente reenvia por ahi.
         if ($claveTecnica) { $cadena = $cadena.Replace($claveTecnica, '<CLAVE_TECNICA>') }
-        [void] $out.Add("Cadena CUFE: $cadena")
-        [void] $out.Add("CUFE nuevo:  $($r.CufeNuevo)")
+        if ($softwarePin) { $cadena = $cadena.Replace($softwarePin, '<SOFTWARE_PIN>') }
+        [void] $out.Add("Cadena ${codigo}: $cadena")
+        [void] $out.Add("$codigo nuevo:  $($r.CufeNuevo)")
         if ($r.CufeAnterior -and $r.CufeAnterior.ToLower() -ne $r.CufeNuevo) {
-            [void] $out.Add('  -> El CUFE cambio. El XML corregido ya lleva el nuevo.')
+            [void] $out.Add("  -> El $codigo cambio. El XML corregido ya lleva el nuevo.")
         } elseif ($r.CufeAnterior) {
-            [void] $out.Add('  -> El CUFE no cambio, ya estaba bien.')
+            [void] $out.Add("  -> El $codigo no cambio, ya estaba bien.")
         }
-    } else {
-        [void] $out.Add('AVISO: sin clave tecnica y ambiente NO se puede recalcular el CUFE.')
+    } elseif ($r.Avisos.Count -eq 0) {
+        [void] $out.Add("AVISO: falta el secreto o el ambiente, NO se recalculo el $codigo.")
     }
     return ($out -join "`r`n")
 }
@@ -752,6 +782,8 @@ function Get-Config {
 
     $clave = Leer 'clave_tecnica' ''
     if ($clave.ToUpper().StartsWith('PEGA')) { $clave = '' }
+    $pin = Leer 'software_pin' ''
+    if ($pin.ToUpper().StartsWith('PEGA')) { $pin = '' }
     $ambiente = Leer 'ambiente' ''
     if ($ambiente -ne '1' -and $ambiente -ne '2') { $ambiente = '' }
 
@@ -765,6 +797,7 @@ function Get-Config {
 
     return [PSCustomObject]@{
         ClaveTecnica = $clave
+        SoftwarePin = $pin
         Ambiente = $ambiente
         Entrada = (Ruta 'entrada' 'entrada')
         Salida = (Ruta 'salida' 'salida')
@@ -810,13 +843,13 @@ function Invoke-Correccion([string] $rutaXml, $config, [string] $carpetaSalida) 
     $sello = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $INV)
 
     try {
-        $r = Invoke-Xml $rutaXml $config.ClaveTecnica $config.Ambiente
+        $r = Invoke-Xml $rutaXml $config.ClaveTecnica $config.Ambiente $config.SoftwarePin
     } catch {
         Add-Registro @($sello, $nombre, '', '', '', '', '', "ERROR: $($_.Exception.Message)")
         return @($false, "ERROR leyendo $nombre : $($_.Exception.Message)")
     }
 
-    $texto = Get-Informe $r $nombre $config.ClaveTecnica
+    $texto = Get-Informe $r $nombre $config.ClaveTecnica $config.SoftwarePin
     Save-Doc $r.Doc $salidaXml
     [System.IO.File]::WriteAllText($salidaTxt, $texto + "`r`n",
         (New-Object System.Text.UTF8Encoding($false)))
@@ -836,7 +869,7 @@ function Invoke-Correccion([string] $rutaXml, $config, [string] $carpetaSalida) 
     }
     if ($r.Firmado) { $resumen += '  [venia FIRMADO - hay que volver a firmarlo]' }
     if (-not $r.CufeNuevo) {
-        $resumen += '  [sin clave tecnica en config.ini: CUFE NO recalculado]'
+        $resumen += "  [falta el secreto en config.ini: $($r.Codigo) NO recalculado]"
     }
     return @($true, $resumen)
 }

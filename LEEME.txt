@@ -49,8 +49,16 @@ sacan los mismos descuadres y el mismo CUFE, caracter por caracter.
 -----------------------------------------------------------
 Abre  config.ini  con el Bloc de notas y pon:
 
-      clave_tecnica = (la clave tecnica de tu software, del portal DIAN)
+      clave_tecnica = (la clave tecnica, del portal DIAN)
+      software_pin  = (el PIN del software, del portal DIAN)
       ambiente      = 1 si es produccion, 2 si es habilitacion
+
+OJO con esos dos, NO son el mismo dato y no se pueden intercambiar:
+      FACTURA de venta      -> su codigo es el CUFE -> usa la CLAVE TECNICA
+      NOTA credito o debito -> su codigo es el CUDE -> usa el PIN DEL SOFTWARE
+Las notas no tienen rango de numeracion, por eso no llevan clave tecnica. El
+robot elige solo el que corresponde segun el tipo de documento. Si le falta el
+que necesita, NO inventa el codigo: te avisa y lo deja sin calcular.
 
 Guarda y cierra. Eso es todo.
 
